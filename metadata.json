@@ -1,0 +1,6 @@
+{
+  "name": "Blueprint Trading Coach Terminal",
+  "description": "Systematic algorithmic trading terminal and discipline coach implementing D1 → H4 → H1 → M15 EMA hierarchy with EMA 2/5 triggers and 3-TF confluence validation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
