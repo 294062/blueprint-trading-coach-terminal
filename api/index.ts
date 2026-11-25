@@ -189,6 +189,26 @@ let quoteCache: { data: any; timestamp: number } | null = null;
 const candleCache = new Map<string, { data: any; timestamp: number }>();
 
 // YFinance Live Quotes Endpoint for all assets
+async function fetchYahooQuoteMetadata(symbol: string) {
+  for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
+    try {
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=15m&range=1d`;
+      const response = await fetch(url, {
+        headers: { Accept: 'application/json' },
+        signal: AbortSignal.timeout(4000),
+      });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (Number.isFinite(meta?.regularMarketPrice) &&
+          Number.isFinite(meta?.regularMarketTime) && meta.regularMarketTime > 0) return meta;
+    } catch {
+      // Try the other Yahoo chart endpoint.
+    }
+  }
+  return null;
+}
+
 app.get('/api/yfinance/quotes', async (req, res) => {
   const now = Date.now();
   if (quoteCache && now - quoteCache.timestamp < 3500) {
@@ -202,18 +222,8 @@ app.get('/api/yfinance/quotes', async (req, res) => {
     await Promise.allSettled(
       symbolEntries.map(async ([appSymbol, yfSymbol]) => {
         try {
-          const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yfSymbol)}?interval=15m&range=1d`;
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'Accept': 'application/json',
-            },
-          });
-          if (!response.ok) return;
-
-          const data = await response.json();
-          const meta = data?.chart?.result?.[0]?.meta;
-          if (!meta || meta.regularMarketPrice == null) return;
+          const meta = await fetchYahooQuoteMetadata(yfSymbol);
+          if (!meta) return;
 
           const price = meta.regularMarketPrice;
           const prevClose = meta.chartPreviousClose || price;
@@ -227,13 +237,20 @@ app.get('/api/yfinance/quotes', async (req, res) => {
             change24h: Number(change24h.toFixed(2)),
             high: meta.regularMarketDayHigh ? Number(meta.regularMarketDayHigh) : price,
             low: meta.regularMarketDayLow ? Number(meta.regularMarketDayLow) : price,
-            timestamp: now,
+            timestamp: meta.regularMarketTime * 1000,
           };
         } catch {
           // Individual ticker fetch error ignored
         }
       })
     );
+
+    if (Object.keys(results).length === 0) {
+      if (quoteCache) {
+        return res.json({ quotes: quoteCache.data, cached: true, timestamp: quoteCache.timestamp });
+      }
+      return res.status(502).json({ error: 'Yahoo Finance quotes unavailable' });
+    }
 
     quoteCache = { data: results, timestamp: now };
     res.json({ quotes: results, cached: false, timestamp: now });
