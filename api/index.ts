@@ -189,19 +189,26 @@ let quoteCache: { data: any; timestamp: number } | null = null;
 const candleCache = new Map<string, { data: any; timestamp: number }>();
 
 // YFinance Live Quotes Endpoint for all assets
-async function fetchYahooQuoteMetadata(symbol: string) {
+let yahooCooldownUntil = 0;
+
+async function fetchYahooChart(symbol: string, interval: string, range: string) {
+  if (Date.now() < yahooCooldownUntil) return null;
   for (const host of ['query1.finance.yahoo.com', 'query2.finance.yahoo.com']) {
     try {
-      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=15m&range=1d`;
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}`;
       const response = await fetch(url, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(4000),
       });
+      if (response.status === 429) {
+        yahooCooldownUntil = Date.now() + 30000;
+        console.warn('Yahoo chart request returned HTTP 429');
+        return null;
+      }
       if (!response.ok) continue;
       const data = await response.json();
-      const meta = data?.chart?.result?.[0]?.meta;
-      if (Number.isFinite(meta?.regularMarketPrice) &&
-          Number.isFinite(meta?.regularMarketTime) && meta.regularMarketTime > 0) return meta;
+      const chart = data?.chart?.result?.[0];
+      if (chart?.meta && chart?.timestamp?.length) return chart;
     } catch {
       // Try the other Yahoo chart endpoint.
     }
@@ -222,8 +229,9 @@ app.get('/api/yfinance/quotes', async (req, res) => {
     await Promise.allSettled(
       symbolEntries.map(async ([appSymbol, yfSymbol]) => {
         try {
-          const meta = await fetchYahooQuoteMetadata(yfSymbol);
-          if (!meta) return;
+          const meta = (await fetchYahooChart(yfSymbol, '15m', '1d'))?.meta;
+          if (!Number.isFinite(meta?.regularMarketPrice) ||
+              !Number.isFinite(meta?.regularMarketTime) || meta.regularMarketTime <= 0) return;
 
           const price = meta.regularMarketPrice;
           const prevClose = meta.chartPreviousClose || price;
@@ -290,20 +298,10 @@ app.get('/api/yfinance/candles', async (req, res) => {
       range = '5d';
     }
 
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(yfSymbol)}?interval=${interval}&range=${range}`;
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      return res.status(response.status).json({ error: `YFinance returned status ${response.status}` });
+    const res0 = await fetchYahooChart(yfSymbol, interval, range);
+    if (!res0) {
+      return res.status(502).json({ error: 'Yahoo Finance candles unavailable' });
     }
-
-    const data = await response.json();
-    const res0 = data?.chart?.result?.[0];
     const timestamps: number[] = res0?.timestamp || [];
     const quote = res0?.indicators?.quote?.[0] || {};
 
